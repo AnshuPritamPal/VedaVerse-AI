@@ -1,0 +1,1 @@
+"""VedaVerse Streamlit frontend package."""
