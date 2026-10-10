@@ -12,16 +12,27 @@ if PROJECT_ROOT not in sys.path:
 
 import streamlit as st
 
+# The interface relies on Streamlit features (segmented controls, keyed and
+# horizontal containers, st.iframe) that older releases do not have.
+_MIN_STREAMLIT = (1, 64)
+if tuple(int(part) for part in st.__version__.split(".")[:2]) < _MIN_STREAMLIT:
+    st.error(
+        f"VedaVerse AI needs Streamlit {'.'.join(map(str, _MIN_STREAMLIT))} or newer, "
+        f"but this Python has Streamlit {st.__version__}. Run the app with the "
+        "project's virtual environment: `venv/Scripts/python -m streamlit run frontend/app.py`, "
+        "or upgrade with `pip install -U streamlit`."
+    )
+    st.stop()
+
 from frontend import api_client
 from frontend.api_client import APIError
 
 from frontend.ui import auth, chat, sidebar, styles
-from frontend.ui.components import html
 
 
 st.set_page_config(
     page_title="VedaVerse AI",
-    page_icon="🪷",
+    page_icon=str(Path(__file__).resolve().parent / "assets" / "krishna_arjuna.png"),
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -41,10 +52,6 @@ for key, default in {
 
 styles.apply_styles(st.session_state.dark_mode)
 
-if auth.render_navbar(logged_in=bool(st.session_state.access_token)):
-    auth.clear_authentication()
-    st.rerun()
-
 if not st.session_state.access_token:
     auth.render_authentication(sidebar.refresh_conversations)
     st.stop()
@@ -56,6 +63,6 @@ if st.session_state.current_user is None:
     except APIError as exc:
         sidebar.handle_api_error(exc)
 
+question = chat.take_question()
 sidebar.render_sidebar()
-chat.render_chat()
-html('<div class="footer">🪷 Inspired by the timeless wisdom of the scriptures</div>')
+chat.render_chat(question)

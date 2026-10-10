@@ -4,7 +4,7 @@ from html import escape as html_escape
 
 import streamlit as st
 
-from .components import as_text, html
+from .components import as_text
 
 
 def show_references(display_items, verses=None, message_key="latest") -> None:
@@ -46,8 +46,7 @@ def show_references(display_items, verses=None, message_key="latest") -> None:
     with st.expander("References", expanded=False):
         for index, group in enumerate(grouped_items):
             reference = group["reference"]
-            with st.container(border=True):
-                html('<span class="reference-card-marker" aria-hidden="true"></span>')
+            with st.container(border=True, key=f"ref_{message_key}_{index}"):
                 st.markdown(f"**{reference}**")
                 displayed_passages = set()
                 for item in group["items"]:
@@ -74,7 +73,7 @@ def show_references(display_items, verses=None, message_key="latest") -> None:
                 if st.button(
                     f"Complete Shloka {'▲' if is_open else '▼'}",
                     key=f"complete_shloka_button_{message_key}_{index}",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     is_open = not is_open
                     st.session_state[toggle_key] = is_open

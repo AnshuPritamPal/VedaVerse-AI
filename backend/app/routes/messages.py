@@ -11,9 +11,11 @@ from app.models.message import Message
 from app.models.user import User
 from app.schemas.message import MessageCreateRequest, MessageResponse
 from app.services.conversation_service import (
+    DEFAULT_TITLE,
     ConversationStoreUnavailable,
     InvalidConversationId,
     conversation_service,
+    title_from_question,
 )
 from app.services.message_service import MessageStoreUnavailable, message_service
 from app.services.rag_service import RagServiceError, generate_rag_response
@@ -87,6 +89,17 @@ async def send_message(
         )
     except MessageStoreUnavailable as exc:
         raise _storage_error(exc) from exc
+
+    if conversation.title == DEFAULT_TITLE:
+        # Name the conversation after its first question, as chat apps do.
+        try:
+            await conversation_service.set_title(
+                conversation_id=conversation.id,
+                user_id=current_user.id,
+                title=title_from_question(request.content),
+            )
+        except ConversationStoreUnavailable:
+            logger.warning("Could not set the title for a new conversation.")
 
     try:
         result = await run_in_threadpool(generate_rag_response, request.content)

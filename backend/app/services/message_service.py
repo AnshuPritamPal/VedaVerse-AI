@@ -73,6 +73,28 @@ class MessageService:
             raise MessageStoreUnavailable("Messages could not be retrieved.") from exc
         return [Message.from_mongo_document(document) for document in documents]
 
+    async def first_user_message(
+        self, *, conversation_id: ObjectId, user_id: ObjectId
+    ) -> Message | None:
+        try:
+            document = await self._collection().find_one(
+                {"conversation_id": conversation_id, "user_id": user_id, "role": "user"},
+                sort=[("created_at", ASCENDING)],
+            )
+        except PyMongoError as exc:
+            raise MessageStoreUnavailable("Messages could not be retrieved.") from exc
+        return Message.from_mongo_document(document) if document else None
+
+    async def delete_for_conversation(
+        self, *, conversation_id: ObjectId, user_id: ObjectId
+    ) -> None:
+        try:
+            await self._collection().delete_many(
+                {"conversation_id": conversation_id, "user_id": user_id}
+            )
+        except PyMongoError as exc:
+            raise MessageStoreUnavailable("Messages could not be deleted.") from exc
+
     async def update_conversation_activity(
         self, *, conversation_id: ObjectId, user_id: ObjectId
     ) -> None:

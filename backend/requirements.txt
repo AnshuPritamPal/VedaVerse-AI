@@ -10,3 +10,4 @@ dnspython>=2.7,<3
 email-validator>=2.2,<3
 pwdlib[argon2]>=0.2.1,<1
 PyJWT>=2.10,<3
+streamlit>=1.64,<2

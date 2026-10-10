@@ -1,7 +1,9 @@
 """Authenticated conversation management endpoints."""
 
 import logging
+from dataclasses import replace
 
+from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from app.core.security import get_current_user
@@ -9,10 +11,13 @@ from app.models.conversation import Conversation
 from app.models.user import User
 from app.schemas.conversation import ConversationCreateRequest, ConversationResponse
 from app.services.conversation_service import (
+    DEFAULT_TITLE,
     ConversationStoreUnavailable,
     InvalidConversationId,
     conversation_service,
+    title_from_question,
 )
+from app.services.message_service import MessageStoreUnavailable, message_service
 
 
 logger = logging.getLogger(__name__)
@@ -28,7 +33,27 @@ def _response(conversation: Conversation) -> ConversationResponse:
     )
 
 
-def _storage_error(exc: ConversationStoreUnavailable) -> HTTPException:
+async def _backfill_title(conversation: Conversation) -> Conversation:
+    """Name conversations created before automatic titling from their first question."""
+    if conversation.title != DEFAULT_TITLE:
+        return conversation
+    try:
+        first = await message_service.first_user_message(
+            conversation_id=conversation.id, user_id=conversation.user_id
+        )
+        if first is None:
+            return conversation
+        title = title_from_question(first.content)
+        await conversation_service.set_title(
+            conversation_id=conversation.id, user_id=conversation.user_id, title=title
+        )
+    except (MessageStoreUnavailable, ConversationStoreUnavailable):
+        logger.warning("Could not backfill a conversation title.")
+        return conversation
+    return replace(conversation, title=title)
+
+
+def _storage_error(exc: Exception) -> HTTPException:
     logger.error("Conversation storage is unavailable: %s", exc)
     return HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -66,7 +91,7 @@ async def list_conversations(
         )
     except ConversationStoreUnavailable as exc:
         raise _storage_error(exc) from exc
-    return [_response(conversation) for conversation in conversations]
+    return [_response(await _backfill_title(conversation)) for conversation in conversations]
 
 
 @router.get(
@@ -114,4 +139,10 @@ async def delete_conversation(
 
     if not deleted:
         raise HTTPException(status_code=404, detail="Conversation not found.")
+    try:
+        await message_service.delete_for_conversation(
+            conversation_id=ObjectId(conversation_id), user_id=current_user.id
+        )
+    except MessageStoreUnavailable:
+        logger.warning("Conversation deleted but its messages could not be removed.")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -81,6 +81,10 @@ def create_conversation(token: str):
                        payload={"title": "New Conversation"})
 
 
+def delete_conversation(token: str, conversation_id: str):
+    return request_api("DELETE", f"/api/conversations/{conversation_id}", token=token)
+
+
 def get_messages(token: str, conversation_id: str):
     return request_api("GET", f"/api/conversations/{conversation_id}/messages", token=token)
 

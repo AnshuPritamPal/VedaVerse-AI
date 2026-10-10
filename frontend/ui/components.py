@@ -9,6 +9,23 @@ def html(markup: str) -> None:
     st.markdown(cleaned, unsafe_allow_html=True)
 
 
+def _flip_theme() -> None:
+    st.session_state.dark_mode = not st.session_state.dark_mode
+
+
+def theme_toggle(key: str, width="content") -> None:
+    """One button that switches between light and dark mode."""
+    dark = st.session_state.dark_mode
+    st.button(
+        "Light mode" if dark else "Dark mode",
+        key=key,
+        icon=":material/light_mode:" if dark else ":material/dark_mode:",
+        on_click=_flip_theme,
+        help="Switch to light mode" if dark else "Switch to dark mode",
+        width=width,
+    )
+
+
 def as_text(value) -> str:
     """Accept plain text or the dataset's {text: ...} representation."""
     if isinstance(value, dict):
