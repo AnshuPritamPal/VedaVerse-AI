@@ -29,6 +29,8 @@ from app.routes.auth import router as auth_router
 from app.routes.chat import router as chat_router
 from app.routes.conversations import router as conversations_router
 from app.routes.messages import router as messages_router
+from app.routes.questions import router as questions_router
+from app.services.answer_cache_service import AnswerCacheUnavailable, answer_cache_service
 from app.services.auth_service import RegistrationUnavailable, auth_service
 from app.services.conversation_service import (
     ConversationStoreUnavailable,
@@ -59,6 +61,10 @@ async def lifespan(app: FastAPI):
             await message_service.ensure_indexes()
         except MessageStoreUnavailable as exc:
             logger.warning("Message indexes are unavailable: %s", exc)
+        try:
+            await answer_cache_service.ensure_indexes()
+        except AnswerCacheUnavailable as exc:
+            logger.warning("Answer cache indexes are unavailable: %s", exc)
     except MongoDBUnavailable as exc:
         app.state.mongodb = None
         app.state.mongodb_ready = False
@@ -97,6 +103,7 @@ app.include_router(chat_router, prefix="/api")
 app.include_router(auth_router, prefix="/api/auth")
 app.include_router(conversations_router, prefix="/api/conversations")
 app.include_router(messages_router, prefix="/api/conversations")
+app.include_router(questions_router, prefix="/api/questions")
 
 
 @app.get("/api/health", tags=["health"])

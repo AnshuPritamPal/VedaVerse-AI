@@ -40,10 +40,31 @@ The frontend calls FastAPI through `frontend/api_client.py`; it does not import 
 1. Extraction utilities turn a locally supplied Bhagavad Gita PDF into text and structured verse data.
 2. `rag/prepare_dataset.py` builds a cleaned search dataset and a complete-verse dataset.
 3. `rag/ingest.py` encodes search passages with the `all-MiniLM-L6-v2` Sentence Transformers model, normalizes the vectors, and writes a FAISS index plus metadata under `vectorstore/`.
-4. `rag/retrieve.py` finds relevant passages. `rag/rag.py` uses the retrieved context to generate an answer through Groq and prepares the response references and verse details.
-5. The FastAPI message route stores the user and assistant messages in MongoDB.
+4. `rag/retrieve.py` finds relevant passages with **hybrid retrieval** (below). A question that names a verse, such as "Explain 2.47", is looked up directly instead. `rag/rag.py` uses the retrieved context to generate an answer through Groq and prepares the response references and verse details.
+5. The FastAPI message route answers repeated questions from the **FAQ answer cache** (below) and stores the user and assistant messages in MongoDB.
 
-The RAG code includes citation validation against retrieved passages and an insufficient-context response path. This README does not report benchmark or accuracy figures.
+The RAG code includes citation validation against retrieved passages and an insufficient-context response path.
+
+### Hybrid retrieval
+
+Two retrievers rank the indexed passages, and Reciprocal Rank Fusion merges their rankings (`RRF_K = 20` in `rag/retrieve.py`):
+
+- **Semantic search:** FAISS over MiniLM embeddings finds passages with the same meaning in different words, for example "Should I quit my job and become a monk?".
+- **Keyword search:** BM25 in `rag/keyword_search.py` finds exact terms, including Sanskrit words and names the embedding model handles poorly, such as *sthita-prajña*, *brahma-bhūta* and *man-manā*. It ignores diacritics, so "Krishna", "Krsna" and "Kṛṣṇa" all match.
+
+`python scripts/eval_retrieval.py` measures recall@8 and MRR on 33 questions whose answer verses are well known. On that set, semantic search alone scores 87.9% recall, keyword search 90.9%, and hybrid 100%. The two retrievers fail on different questions, which is why fusing them helps. The set is small and hand-written, so treat these figures as a regression check rather than a benchmark.
+
+### FAQ answer cache
+
+`backend/app/services/answer_cache_service.py` stores complete, verified answers in the MongoDB `answer_cache` collection and serves repeated questions without calling retrieval or the LLM:
+
+- **Exact repeats** match on case- and punctuation-insensitive text.
+- **Paraphrases** match when their embedding similarity is at least `ANSWER_CACHE_SIMILARITY` (0.92). Questions that mention different numbers never match, so "Explain 2.47" never reuses 2.48. Requests for a detailed answer are cached separately from concise ones.
+- **Not cached:** answers with insufficient context or no references.
+- **Expiry and versioning:** entries expire after `ANSWER_CACHE_TTL_DAYS`. `CACHE_VERSION` in the service invalidates every entry when retrieval or generation changes.
+- **Popular questions:** hit counts and distinct-asker counts record which questions are asked most. `GET /api/questions/popular` lists questions that at least three different people have asked, and the chat welcome screen suggests them.
+
+The 0.92 threshold is deliberately strict. With this embedding model, some different questions score up to about 0.90, for example "What happens after death?" against "What happens at the time of death?".
 
 ## Technology
 
@@ -95,6 +116,7 @@ FastAPI's interactive API documentation is available at `/docs` while the backen
 | `GET`, `POST` | `/api/conversations` | List or create conversations |
 | `GET`, `DELETE` | `/api/conversations/{conversation_id}` | Read or delete a conversation |
 | `GET`, `POST` | `/api/conversations/{conversation_id}/messages` | Read history or submit a question |
+| `GET` | `/api/questions/popular` | Most frequently asked questions (from the answer cache) |
 | `POST` | `/api/chat` | Generate a chat response through the RAG pipeline |
 
 ## Local setup
@@ -198,4 +220,4 @@ The frontend defaults to `http://127.0.0.1:8000`; set `VEDAVERSE_API_URL` in `.e
 ## Author
 
 Anshu Pritam Pal
-
+(NIT Rourkela)

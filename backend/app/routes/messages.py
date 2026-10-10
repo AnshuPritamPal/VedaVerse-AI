@@ -17,8 +17,14 @@ from app.services.conversation_service import (
     conversation_service,
     title_from_question,
 )
+from app.config import settings
+from app.services.answer_cache_service import AnswerCacheUnavailable, answer_cache_service
 from app.services.message_service import MessageStoreUnavailable, message_service
-from app.services.rag_service import RagServiceError, generate_rag_response
+from app.services.rag_service import (
+    RagServiceError,
+    generate_rag_response,
+    question_signature,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -62,6 +68,29 @@ async def _owned_conversation(conversation_id: str, user: User) -> Conversation:
     return conversation
 
 
+async def _answer(question: str, user_id) -> dict:
+    """Serve a frequently asked question from the cache, else run the RAG pipeline."""
+    signature = None
+    if settings.answer_cache_enabled:
+        try:
+            signature = await run_in_threadpool(question_signature, question)
+            cached = await answer_cache_service.lookup(signature, user_id=user_id)
+            if cached is not None:
+                return cached
+        except (RagServiceError, AnswerCacheUnavailable):
+            # The cache is an optimisation; answer normally if it is unavailable.
+            logger.warning("Answer cache lookup skipped.", exc_info=True)
+
+    result = await run_in_threadpool(generate_rag_response, question)
+
+    if signature is not None:
+        try:
+            await answer_cache_service.store(question, signature, result, user_id=user_id)
+        except AnswerCacheUnavailable:
+            logger.warning("Answer could not be cached.", exc_info=True)
+    return result
+
+
 @router.post(
     "/{conversation_id}/messages",
     response_model=MessageResponse,
@@ -102,7 +131,7 @@ async def send_message(
             logger.warning("Could not set the title for a new conversation.")
 
     try:
-        result = await run_in_threadpool(generate_rag_response, request.content)
+        result = await _answer(request.content, current_user.id)
     except RagServiceError as exc:
         logger.exception("RAG failed for a persisted conversation message.")
         raise HTTPException(

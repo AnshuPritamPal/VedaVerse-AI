@@ -7,6 +7,11 @@ import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
+try:
+    from .keyword_search import BM25Index, document_text
+except ImportError:  # running this file directly as a script
+    from keyword_search import BM25Index, document_text
+
 
 # =========================================================
 # 1. CONFIGURATION
@@ -21,6 +26,15 @@ METADATA_PATH = VECTORSTORE_DIR / "metadata.json"
 VERSE_DATASET_PATH = DATA_DIR / "verse_dataset.json"
 
 MODEL_NAME = "all-MiniLM-L6-v2"
+
+# Hybrid retrieval: how many candidates each retriever contributes, and the
+# Reciprocal Rank Fusion constant. A smaller constant lets a retriever's top
+# hits count for more; 20 scored best in scripts/eval_retrieval.py (60, the
+# value from the original RRF paper, dropped a Sanskrit-term question).
+HYBRID_CANDIDATES = 50
+RRF_K = 20
+SEMANTIC_WEIGHT = 1.0
+KEYWORD_WEIGHT = 1.0
 
 
 # =========================================================
@@ -101,6 +115,20 @@ print(f"Loaded {len(verse_lookup)} complete scripture records.")
 print("Loading embedding model...")
 
 model = SentenceTransformer(MODEL_NAME)
+
+print("Building keyword (BM25) index...")
+
+keyword_index = BM25Index([document_text(document) for document in documents])
+
+
+def embed_texts(texts):
+    """Normalized embeddings, so a dot product is cosine similarity."""
+    return model.encode(
+        list(texts),
+        convert_to_numpy=True,
+        normalize_embeddings=True,
+        show_progress_bar=False
+    ).astype("float32")
 
 
 # =========================================================
@@ -266,69 +294,28 @@ def retrieve_exact_verse(chapter, verse):
 
 
 # =========================================================
-# 7. SEMANTIC FAISS SEARCH
+# 7. SEMANTIC, KEYWORD AND HYBRID SEARCH
 # =========================================================
 
-def retrieve_semantic(
-    question,
-    k=3,
-    min_similarity=None
-):
-    """Retrieve relevant scripture chunks using FAISS."""
+def _build_result(doc_index, score, retrieval_type):
+    document = documents[doc_index]
+    chapter, verse, reference = get_reference(document)
+    return {
+        "document": document,
+        "score": score,
+        "distance": 1.0 - score if retrieval_type == "semantic" else None,
+        "chapter": chapter,
+        "verse": verse,
+        "reference": reference,
+        "retrieval_type": retrieval_type
+    }
 
-    if index.ntotal == 0:
-        return []
 
-    if min_similarity is not None:
-        min_similarity = float(min_similarity)
-
-        if not -1.0 <= min_similarity <= 1.0:
-            raise ValueError(
-                "min_similarity must be between -1 and 1."
-            )
-
-    question_embedding = model.encode(
-        [question.strip()],
-        convert_to_numpy=True,
-        normalize_embeddings=True
-    ).astype("float32")
-
-    search_k = min(max(k * 4, k), index.ntotal)
-
-    scores, indices = index.search(
-        question_embedding,
-        search_k
-    )
-
-    results = []
-
-    for score, idx in zip(scores[0], indices[0]):
-        if idx < 0 or idx >= len(documents):
-            continue
-
-        score = float(score)
-
-        if (
-            min_similarity is not None
-            and score < min_similarity
-        ):
-            continue
-
-        document = documents[idx]
-        chapter, verse, reference = get_reference(document)
-
-        results.append({
-            "document": document,
-            "score": score,
-            "distance": 1.0 - score,
-            "chapter": chapter,
-            "verse": verse,
-            "reference": reference,
-            "retrieval_type": "semantic"
-        })
-
-    # FAISS indexes chunks, so several top hits may belong to the same verse.
-    # Keep the best-scoring chunk for each unique verse, preserving rank order.
+def _unique_verses(results, k):
+    """
+    The indexes hold chunks, so several top hits may belong to the same verse.
+    Keep the best-ranked chunk for each unique verse, preserving rank order.
+    """
     unique_results = []
     seen_references = set()
     for result in results:
@@ -340,8 +327,85 @@ def retrieve_semantic(
         unique_results.append(result)
         if len(unique_results) >= k:
             break
-
     return unique_results
+
+
+def _semantic_candidates(question, limit):
+    """[(doc index, cosine similarity)] from FAISS, best first."""
+    if index.ntotal == 0:
+        return []
+    scores, indices = index.search(embed_texts([question.strip()]), min(limit, index.ntotal))
+    return [
+        (int(idx), float(score))
+        for score, idx in zip(scores[0], indices[0])
+        if 0 <= idx < len(documents)
+    ]
+
+
+def retrieve_semantic(
+    question,
+    k=3,
+    min_similarity=None
+):
+    """Retrieve relevant scripture chunks using FAISS."""
+
+    if min_similarity is not None:
+        min_similarity = float(min_similarity)
+
+        if not -1.0 <= min_similarity <= 1.0:
+            raise ValueError(
+                "min_similarity must be between -1 and 1."
+            )
+
+    results = [
+        _build_result(doc_index, score, "semantic")
+        for doc_index, score in _semantic_candidates(question, max(k * 4, k))
+        if min_similarity is None or score >= min_similarity
+    ]
+    return _unique_verses(results, k)
+
+
+def retrieve_keyword(question, k=3):
+    """Retrieve chunks that share rare terms with the question (BM25)."""
+    results = [
+        _build_result(doc_index, score, "keyword")
+        for doc_index, score in keyword_index.search(question, max(k * 4, k))
+    ]
+    return _unique_verses(results, k)
+
+
+def retrieve_hybrid(question, k=3, min_similarity=None):
+    """
+    Combine semantic and keyword search with Reciprocal Rank Fusion.
+
+    Each retriever ranks its candidates; a chunk scores
+    weight / (RRF_K + rank) in every list it appears in. Fusing ranks rather
+    than raw scores avoids comparing cosine similarities with BM25 scores,
+    which live on unrelated scales.
+
+    min_similarity only filters the semantic list; a strong keyword match can
+    still be returned on its own.
+    """
+    semantic = _semantic_candidates(question, HYBRID_CANDIDATES)
+    if min_similarity is not None:
+        semantic = [(i, s) for i, s in semantic if s >= float(min_similarity)]
+    keyword = keyword_index.search(question, HYBRID_CANDIDATES)
+
+    fused = {}
+    for weight, ranked in ((SEMANTIC_WEIGHT, semantic), (KEYWORD_WEIGHT, keyword)):
+        for rank, (doc_index, _) in enumerate(ranked, start=1):
+            fused[doc_index] = fused.get(doc_index, 0.0) + weight / (RRF_K + rank)
+
+    semantic_scores = dict(semantic)
+    keyword_scores = dict(keyword)
+    results = []
+    for doc_index, rrf_score in sorted(fused.items(), key=lambda item: -item[1]):
+        result = _build_result(doc_index, semantic_scores.get(doc_index, 0.0), "hybrid")
+        result["distance"] = 1.0 - result["score"]
+        result["rrf_score"] = rrf_score
+        result["keyword_score"] = keyword_scores.get(doc_index, 0.0)
+        results.append(result)
+    return _unique_verses(results, k)
 
 
 # =========================================================
@@ -360,7 +424,7 @@ def retrieve_verses(
         Retrieve the complete record directly.
 
     General question:
-        Use semantic FAISS search.
+        Use hybrid search (semantic FAISS + BM25 keywords).
 
     If an explicitly requested verse does not exist:
         Return an empty list instead of unrelated results.
@@ -378,7 +442,7 @@ def retrieve_verses(
         chapter, verse = exact_reference
         return retrieve_exact_verse(chapter, verse)
 
-    return retrieve_semantic(
+    return retrieve_hybrid(
         question=question,
         k=k,
         min_similarity=min_similarity

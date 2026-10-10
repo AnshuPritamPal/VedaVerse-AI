@@ -1,5 +1,6 @@
 """Chat history, welcome prompts, input handling, and API submissions."""
 
+import time
 from html import escape as html_escape
 
 import streamlit as st
@@ -19,6 +20,26 @@ SUGGESTIONS = [
     (":material/self_improvement:", "How do I find inner peace?"),
     (":material/autorenew:", "What is karma?"),
 ]
+POPULAR_REFRESH_SECONDS = 300
+
+
+def _suggestions() -> list[tuple[str, str]]:
+    """Frequently asked questions first, topped up with the built-in prompts."""
+    fetched_at = st.session_state.get("popular_fetched_at", 0.0)
+    if time.monotonic() - fetched_at > POPULAR_REFRESH_SECONDS:
+        try:
+            popular = api_client.get_popular_questions(
+                st.session_state.access_token, limit=len(SUGGESTIONS)
+            )
+        except APIError:
+            popular = []  # Optional: fall back to the built-in prompts.
+        st.session_state.popular_questions = [item["question"] for item in popular or []]
+        st.session_state.popular_fetched_at = time.monotonic()
+
+    combined = [(":material/trending_up:", q) for q in st.session_state.popular_questions]
+    seen = {question.casefold().rstrip("?") for _, question in combined}
+    combined += [s for s in SUGGESTIONS if s[1].casefold().rstrip("?") not in seen]
+    return combined[:len(SUGGESTIONS)]
 
 
 def _render_welcome() -> None:
@@ -32,8 +53,9 @@ def _render_welcome() -> None:
         <div class="welcome-subtitle">What would you like to understand from the Bhagavad-gītā today?</div>
     </div>
     """)
+    suggestions = _suggestions()
     with st.container(key="suggestions"):
-        for row in (SUGGESTIONS[:2], SUGGESTIONS[2:]):
+        for row in (suggestions[:2], suggestions[2:]):
             with st.container(horizontal=True, gap="small"):
                 for icon, suggestion in row:
                     if st.button(suggestion, key=f"suggestion_{suggestion}", icon=icon, width="stretch"):

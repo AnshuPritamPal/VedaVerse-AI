@@ -92,3 +92,7 @@ def get_messages(token: str, conversation_id: str):
 def send_message(token: str, conversation_id: str, content: str):
     return request_api("POST", f"/api/conversations/{conversation_id}/messages",
                        token=token, payload={"content": content})
+
+
+def get_popular_questions(token: str, limit: int = 4):
+    return request_api("GET", f"/api/questions/popular?limit={int(limit)}", token=token)

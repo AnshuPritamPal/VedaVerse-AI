@@ -27,6 +27,13 @@ class Settings:
     access_token_expire_minutes: int = int(
         os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30")
     )
+    # Frequently-asked-question cache for generated answers.
+    answer_cache_enabled: bool = os.getenv("ANSWER_CACHE_ENABLED", "true").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+    # Cosine similarity at which a new question reuses a cached answer.
+    answer_cache_similarity: float = float(os.getenv("ANSWER_CACHE_SIMILARITY", "0.92"))
+    answer_cache_ttl_days: int = int(os.getenv("ANSWER_CACHE_TTL_DAYS", "30"))
 
 
 settings = Settings()
